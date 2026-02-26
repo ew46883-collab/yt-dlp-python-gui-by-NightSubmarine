@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        :root { --main: #2563eb; --bg: #f8fafc; --card: #ffffff; }
+        body { font-family: sans-serif; background: var(--bg); margin: 0; padding: 15px; height: 100vh; display: flex; flex-direction: column; box-sizing: border-box; }
+        .config-card { background: var(--card); padding: 12px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 15px; }
+        .main-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; flex: 1; min-height: 0; }
+        .pane { background: var(--card); border: 1px solid #ddd; border-radius: 8px; display: flex; flex-direction: column; padding: 12px; }
+        h3 { margin: 0 0 10px 0; font-size: 14px; color: #444; border-bottom: 2px solid var(--main); display: inline-block; }
+        .btn-group { display: flex; gap: 8px; margin-bottom: 10px; }
+        button { cursor: pointer; padding: 6px 12px; border: none; border-radius: 4px; background: var(--main); color: white; font-size: 13px; }
+        button:hover { opacity: 0.9; }
+        button.gray { background: #64748b; }
+        button.red { background: #ef4444; }
+        textarea { flex: 1; width: 100%; resize: none; border: 1px solid #cbd5e1; border-radius: 4px; padding: 8px; font-family: monospace; font-size: 12px; box-sizing: border-box; }
+        #log-area { height: 120px; background: #1e293b; color: #10b981; padding: 10px; border-radius: 4px; overflow-y: auto; font-size: 11px; white-space: pre-wrap; margin-top: 15px; }
+        .progress-bar { height: 8px; background: #e2e8f0; border-radius: 4px; margin-top: 10px; display: none; overflow: hidden; }
+        #inner-bar { height: 100%; background: #22c55e; width: 0%; transition: width 0.3s; }
+    </style>
+</head>
+<body>
+
+    <div class="config-card">
+        <h3 style="border:none">⚙️ mkvpropedit.exe 路径设置</h3>
+        <div style="display:flex; gap:10px;">
+            <input type="text" id="exe-path" style="flex:1; padding:6px;" value="C:\Program Files\MKVToolNix\mkvpropedit.exe">
+            <button class="gray" onclick="browseExe()">选择文件</button>
+        </div>
+    </div>
+
+    <div class="main-grid">
+        <div class="pane">
+            <h3>1. 视频文件 (MKV 列表)</h3>
+            <div class="btn-group">
+                <button onclick="addMkv()">添加文件</button>
+                <button onclick="addFolder()">添加目录</button>
+                <button class="gray" onclick="clearArea('mkv-list')">清空</button>
+            </div>
+            <textarea id="mkv-list" placeholder="每行一个绝对路径..."></textarea>
+        </div>
+
+        <div class="pane">
+            <div style="flex:1; display:flex; flex-direction:column; margin-bottom:15px;">
+                <h3>2. 待添加附件</h3>
+                <div class="btn-group">
+                    <button onclick="addAtts()">选择附件</button>
+                    <button class="gray" onclick="clearArea('att-list')">清空</button>
+                </div>
+                <textarea id="att-list" style="height:120px;" placeholder="每行一个路径..."></textarea>
+                <button style="margin-top:10px; padding:10px;" onclick="startAdd()">🚀 开始批量添加</button>
+            </div>
+
+            <div style="border-top: 1px dashed #ccc; padding-top:10px;">
+                <h3>3. 批量移除附件</h3>
+                <input type="text" id="keyword" placeholder="文件名关键词 (如: cover)" style="width:100%; padding:8px; box-sizing:border-box; margin-bottom:8px;">
+                <button class="red" style="width:100%;" onclick="startRemove()">🗑️ 按关键词移除匹配项</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="progress-bar" id="p-box"><div id="inner-bar"></div></div>
+    <div id="log-area">等待操作...</div>
+
+    <script>
+        // 给 Python 调用的接口
+        window.addLog = (m) => {
+            const l = document.getElementById('log-area');
+            l.innerText += "\n" + m;
+            l.scrollTop = l.scrollHeight;
+        };
+
+        window.updateProgress = (curr, total) => {
+            const box = document.getElementById('p-box');
+            const bar = document.getElementById('inner-bar');
+            if (total === 0) { box.style.display = 'none'; return; }
+            box.style.display = 'block';
+            bar.style.width = (curr / total * 100) + '%';
+        };
+
+        // 辅助函数：将路径数组合并到 textarea
+        function appendToArea(id, paths) {
+            const area = document.getElementById(id);
+            const exist = area.value.trim();
+            const filtered = paths.filter(p => !exist.includes(p));
+            if (filtered.length > 0) {
+                area.value = (exist ? exist + '\n' : '') + filtered.join('\n');
+            }
+        }
+
+        function clearArea(id) { document.getElementById(id).value = ''; }
+
+        function getList(id) {
+            return document.getElementById(id).value.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+        }
+
+        // 调用 Python API
+        async function browseExe() {
+            const path = await pywebview.api.select_exe();
+            if (path) document.getElementById('exe-path').value = path;
+        }
+
+        async function addMkv() {
+            const paths = await pywebview.api.select_mkv_files();
+            appendToArea('mkv-list', paths);
+        }
+
+        async function addFolder() {
+            const paths = await pywebview.api.select_mkv_folder();
+            appendToArea('mkv-list', paths);
+        }
+
+        async function addAtts() {
+            const paths = await pywebview.api.select_attachments();
+            appendToArea('att-list', paths);
+        }
+
+        function startAdd() {
+            const exe = document.getElementById('exe-path').value;
+            const mkvs = getList('mkv-list');
+            const atts = getList('att-list');
+            if (!mkvs.length || !atts.length) return alert("视频或附件列表不能为空");
+            pywebview.api.run_add_task(exe, mkvs, atts);
+        }
+
+        function startRemove() {
+            const exe = document.getElementById('exe-path').value;
+            const mkvs = getList('mkv-list');
+            const kw = document.getElementById('keyword').value.trim();
+            if (!mkvs.length || !kw) return alert("请输入关键词并提供视频列表");
+            pywebview.api.run_remove_task(exe, mkvs, kw);
+        }
+    </script>
+</body>
+</html>
